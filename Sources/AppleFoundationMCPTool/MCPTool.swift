@@ -31,12 +31,12 @@ public class MCPToolBridge {
         let listToolsResponse = try await client.send(listToolsRequest)
         
         // Print debug info about discovered tools
-        print("Discovered \(listToolsResponse.tools.count) tools from MCP server:")
-        for tool in listToolsResponse.tools {
-            print("  - \(tool.name): \(tool.description)")
-            // Print the input schema if available
-            print("    Schema: \(tool.inputSchema)")
-        }
+        // print("Discovered \(listToolsResponse.tools.count) tools from MCP server:")
+        // for tool in listToolsResponse.tools {
+        //     print("  - \(tool.name): \(tool.description)")
+        //     // Print the input schema if available
+        //     print("    Schema: \(tool.inputSchema)")
+        // }
         
         // Create Apple Foundation Models tools for each MCP tool
         var appleTools: [any FoundationModels.Tool] = []
