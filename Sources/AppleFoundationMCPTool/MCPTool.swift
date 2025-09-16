@@ -128,61 +128,25 @@ public struct DynamicMCPTool: FoundationModels.Tool {
     /// - Parameter arguments: The arguments for the MCP tool
     /// - Returns: The response from the MCP tool
     public func call(arguments: Arguments) async throws -> Output {
-        let paramsDict = try JSONDecoder().decode([String: AnyCodable].self, from: Data(arguments.jsonString.utf8))
-        print("Calling MCP tool '\(toolName)' with arguments: \(paramsDict)")
+        guard let jsonData = arguments.jsonString.data(using: .utf8) else {
+            let errorMessage = "Error: Could not convert JSON string to Data."
+            print(errorMessage)
+            return errorMessage
+        }
         
         do {
-            // Convert arguments to the format expected by MCP
-            var mcpArguments: [String: Value] = [:]
-            for (key, value) in paramsDict {
-                // Convert AnyCodable to Value
-                if let stringValue = value.value as? String {
-                    mcpArguments[key] = .string(stringValue)
-                } else if let intValue = value.value as? Int {
-                    mcpArguments[key] = .int(intValue)
-                } else if let doubleValue = value.value as? Double {
-                    mcpArguments[key] = .double(doubleValue)
-                } else if let boolValue = value.value as? Bool {
-                    mcpArguments[key] = .bool(boolValue)
-                } else if let arrayValue = value.value as? [Any] {
-                    // Convert array elements
-                    var mcpArray: [Value] = []
-                    for element in arrayValue {
-                        if let str = element as? String {
-                            mcpArray.append(.string(str))
-                        } else if let int = element as? Int {
-                            mcpArray.append(.int(int))
-                        } else if let double = element as? Double {
-                            mcpArray.append(.double(double))
-                        } else if let bool = element as? Bool {
-                            mcpArray.append(.bool(bool))
-                        } else {
-                            mcpArray.append(.string(String(describing: element)))
-                        }
-                    }
-                    mcpArguments[key] = .array(mcpArray)
-                } else if let dictValue = value.value as? [String: Any] {
-                    // Convert dictionary elements
-                    var mcpDict: [String: Value] = [:]
-                    for (dictKey, dictValue) in dictValue {
-                        if let str = dictValue as? String {
-                            mcpDict[dictKey] = .string(str)
-                        } else if let int = dictValue as? Int {
-                            mcpDict[dictKey] = .int(int)
-                        } else if let double = dictValue as? Double {
-                            mcpDict[dictKey] = .double(double)
-                        } else if let bool = dictValue as? Bool {
-                            mcpDict[dictKey] = .bool(bool)
-                        } else {
-                            mcpDict[dictKey] = .string(String(describing: dictValue))
-                        }
-                    }
-                    mcpArguments[key] = .object(mcpDict)
-                } else {
-                    // For other types, convert to string
-                    mcpArguments[key] = .string(String(describing: value.value))
-                }
+            let jsonObject = try JSONSerialization.jsonObject(with: jsonData, options: [])
+            
+            guard let paramsDict = jsonObject as? [String: Any] else {
+                let errorMessage = "Error: JSON root is not a dictionary, or is not valid JSON."
+                print("Received content: \(arguments.jsonString)")
+                return errorMessage
             }
+
+            print("Calling MCP tool '\(toolName)' with arguments: \(paramsDict)")
+
+            // Convert arguments to the format expected by MCP using the recursive helper
+            let mcpArguments = paramsDict.mapValues { convertToMCPValue(from: $0) }
             
             print("Converted MCP arguments: \(mcpArguments)")
             
@@ -215,10 +179,42 @@ public struct DynamicMCPTool: FoundationModels.Tool {
             print("Converted result: \(result)")
             return result
         } catch {
-            // Handle error case
-            let errorMessage = "Error calling MCP tool '\(toolName)': \(error.localizedDescription)"
+            // Handle JSON parsing or other errors
+            let errorMessage = "Error calling MCP tool '\(toolName)': \(error.localizedDescription). Invalid JSON: \(arguments.jsonString)"
             print(errorMessage)
             return errorMessage
+        }
+    }
+
+    /// Recursively converts a value of type `Any` from `JSONSerialization` into an `MCP.Value`.
+    /// - Parameter any: The value to convert.
+    /// - Returns: The converted `MCP.Value`.
+    private func convertToMCPValue(from any: Any) -> Value {
+        switch any {
+        case let stringValue as String:
+            return .string(stringValue)
+        case let numValue as NSNumber:
+            // The objCType for a Swift Bool bridged to NSNumber is "c" (for C char).
+            if String(cString: numValue.objCType) == "c" {
+                return .bool(numValue.boolValue)
+            }
+            // Check if the number has a fractional part.
+            if numValue.doubleValue != floor(numValue.doubleValue) {
+                return .double(numValue.doubleValue)
+            }
+            // Otherwise, it's an integer.
+            return .int(numValue.intValue)
+        case let arrayValue as [Any]:
+            return .array(arrayValue.map { convertToMCPValue(from: $0) })
+        case let dictValue as [String: Any]:
+            return .object(dictValue.mapValues { convertToMCPValue(from: $0) })
+        case is NSNull:
+            // MCP.Value does not have a direct representation for null.
+            // We'll represent it as an empty string, which is a safe default.
+            return .string("")
+        default:
+            // For any other unexpected type, fall back to a string representation.
+            return .string(String(describing: any))
         }
     }
 }
