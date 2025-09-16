@@ -2,43 +2,75 @@ import Foundation
 import FoundationModels
 import MCP
 
+/// Defines the connection method for the MCP server.
+public enum MCPConnection {
+    /// Connect to an MCP server via HTTP at the specified URL.
+    case http(serverURL: URL)
+    /// Launch and connect to an MCP server via standard input/output.
+    case stdio(executablePath: String, arguments: [String] = [])
+}
+@available(macOS 26.0, *)
 /// A dynamic bridge that connects to an MCP server and registers its tools with Apple's Foundation Models
 @available(macOS 26.0, *)
 public class MCPToolBridge {
-    private let serverURL: URL
+    private let connection: MCPConnection
     private var client: Client?
-    
-    /// Initializes a new MCPToolBridge instance
-    /// - Parameter serverURL: The URL of the MCP server
-    public init(serverURL: URL) {
-        self.serverURL = serverURL
+    private var serverProcess: Process?
+
+    /// Initializes a new MCPToolBridge instance using a specific connection type.
+    /// - Parameter connection: The connection type, either `.http` with a server URL or `.stdio` with a server executable path.
+    public init(connection: MCPConnection) {
+        self.connection = connection
+    }
+
+    /// Convenience initializer for creating a bridge with an HTTP connection.
+    /// - Parameter serverURL: The URL of the MCP server.
+    public convenience init(serverURL: URL) {
+        self.init(connection: .http(serverURL: serverURL))
+    }
+
+    /// Convenience initializer for creating a bridge that launches and connects to a server via stdin/stdout.
+    /// - Parameters:
+    ///   - executablePath: The path to the MCP server executable.
+    ///   - arguments: The command-line arguments to pass to the executable.
+    public convenience init(executablePath: String, arguments: [String] = []) {
+        self.init(connection: .stdio(executablePath: executablePath, arguments: arguments))
     }
     
-    /// Connects to the MCP server and discovers available tools
+    /// Connects to the MCP server and discovers available tools. For stdio connections, it also launches the server process.
     public func connectAndDiscoverTools() async throws -> [any FoundationModels.Tool] {
-        // Create the HTTP client transport
-        let transport = HTTPClientTransport(endpoint: serverURL)
+        let transport: any Transport
+        switch connection {
+        case .http(let serverURL):
+            transport = HTTPClientTransport(endpoint: serverURL)
+        case .stdio(let executablePath, let arguments):
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: executablePath)
+            process.arguments = arguments
+
+            let toServerPipe = Pipe()
+            let fromServerPipe = Pipe()
+
+            process.standardInput = toServerPipe
+            process.standardOutput = fromServerPipe
+
+            try process.run()
+            self.serverProcess = process
+
+            transport = StdioTransport(
+                input: FileDescriptor(rawValue: fromServerPipe.fileHandleForReading.fileDescriptor),
+                output: FileDescriptor(rawValue: toServerPipe.fileHandleForWriting.fileDescriptor)
+            )
+        }
         
-        // Create the MCP client
         let client = Client(name: "AppleFoundationMCPTool", version: "1.0.0")
         
-        // Connect to the server
         try await client.connect(transport: transport)
         self.client = client
         
-        // List available tools from the server
         let listToolsRequest = ListTools.request(.init())
         let listToolsResponse = try await client.send(listToolsRequest)
         
-        // Print debug info about discovered tools
-        // print("Discovered \(listToolsResponse.tools.count) tools from MCP server:")
-        // for tool in listToolsResponse.tools {
-        //     print("  - \(tool.name): \(tool.description)")
-        //     // Print the input schema if available
-        //     print("    Schema: \(tool.inputSchema)")
-        // }
-        
-        // Create Apple Foundation Models tools for each MCP tool
         var appleTools: [any FoundationModels.Tool] = []
         for tool in listToolsResponse.tools {
             let appleTool = DynamicMCPTool(
@@ -53,12 +85,19 @@ public class MCPToolBridge {
         return appleTools
     }
     
-    /// Disconnects from the MCP server
+    /// Disconnects from the MCP server and terminates the server process if it was launched by the bridge.
     public func disconnect() async {
         if let client = self.client {
             await client.disconnect()
         }
         self.client = nil
+
+        if let serverProcess = self.serverProcess {
+            if serverProcess.isRunning {
+                serverProcess.terminate()
+            }
+            self.serverProcess = nil
+        }
     }
 }
 
