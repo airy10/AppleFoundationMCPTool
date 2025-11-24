@@ -16,7 +16,12 @@ let package = Package(
     ],
     dependencies: [
         // Dependencies declare other packages that this package depends on.
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.1.0")
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk", from: "0.1.0"),
+        .package(
+            url: "https://github.com/airy10/AnyLanguageModel.git",
+            branch: "main",
+            traits: ["MLX"]
+        )
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -24,16 +29,24 @@ let package = Package(
         .target(
             name: "AppleFoundationMCPTool",
             dependencies: [
-                .product(name: "MCP", package: "swift-sdk")
+                .product(name: "MCP", package: "swift-sdk"),
+                .product(name: "AnyLanguageModel", package: "AnyLanguageModel") // Disable to support only Apple models
             ]),
         .testTarget(
             name: "AppleFoundationMCPToolTests",
-            dependencies: ["AppleFoundationMCPTool"]),
+            dependencies: [
+                "AppleFoundationMCPTool"
+            ]),
         .executableTarget(
             name: "AppleFoundationMCPToolExample",
-            dependencies: ["AppleFoundationMCPTool"]),
+            dependencies: [
+                "AppleFoundationMCPTool",
+            ]),
         .executableTarget(
             name: "AppleFoundationMCPToolChat",
-            dependencies: ["AppleFoundationMCPTool"])
+            dependencies: [
+                "AppleFoundationMCPTool",
+            ]
+        )
     ]
 )
