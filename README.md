@@ -1,13 +1,13 @@
 # AppleFoundationMCPTool
 
-A Swift package that acts as a dynamic bridge between Apple's `FoundationModels` framework (or AnyLanguageModel)and any server implementing the [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
+A Swift package that acts as a dynamic bridge between Apple's `FoundationModels` framework (or `AnyLanguageModel`)and any server implementing the [Model Context Protocol (MCP)](https://modelcontextprotocol.io).
 
 > **A Note on This Project**
 > 
 > This project was largely developed by AI agents as a technical demonstration of integrating Apple's `FoundationModels` framework with the Model Context Protocol (MCP).
 > 
 > While functional, it should be considered a proof-of-concept rather than a production-ready solution. The practical utility is currently limited by the context size of the models available in the `FoundationModels` framework, which can make it challenging for the model to effectively use tools with complex input schemas or lengthy descriptions.
-    Switching to AnyLanguageModel fixes this problem that allowing bigger models
+    Switching to `AnyLanguageModel` fixes this problem that allowing bigger models
 
 ## Overview
 
@@ -92,14 +92,10 @@ import AppleFoundationMCPTool // Will also import FoundationModels or AnyLanguag
 // Assuming you have a SessionManager or similar class to manage the LLM session
 do {
     // Connect to the server and get the dynamically created Apple Foundation tools
-    let appleTools = try await bridge.connectAndDiscoverTools()
+    let tools = try await bridge.connectAndDiscoverTools()
     print("Successfully discovered \(appleTools.count) tools.")
 
-    let sess
-    // Register the discovered tools with your session
-    for tool in appleTools {
-        session.addTool(tool)
-    }
+    let session = LanguageModelSession(model: model, tools: tools) 
 
     // You can now use the session, and the LLM will be able to see and call the tools.
     let response = try await session.prompt("Use the 'add' tool to calculate 5 + 7.")
