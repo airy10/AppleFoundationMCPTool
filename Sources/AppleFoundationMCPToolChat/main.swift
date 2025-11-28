@@ -23,7 +23,22 @@ struct InteractiveChat {
         let model = MLXLanguageModel(modelId: "mlx-community/Meta-Llama-3-8B-Instruct-4bit")
         //        let model = MLXLanguageModel(modelId: "mlx-community/Qwen3-0.6B-4bit")
 #else
-        var apiKey = "" // put your OpenCode.ai API key here
+        // Look for some key in the KeyChain
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                    kSecAttrService as String: "https://opencode.ai/zen",
+                                    kSecMatchLimit as String: kSecMatchLimitOne,
+                                    kSecReturnData as String: true]
+
+        var apiKey = ""
+
+        var item: CFTypeRef?
+        let result = SecItemCopyMatching(query as CFDictionary, &item)
+        if result == noErr, let item {
+            if let data = item as? Data {
+                apiKey = String(data: data, encoding: .utf8) ?? ""
+            }
+
+        }
         if apiKey.count == 0 {
             print("Enter your OpenCode API key:")
             guard let input = readLine(), !input.isEmpty else {
@@ -46,12 +61,15 @@ struct InteractiveChat {
         if let serverURL = URL(string: "http://127.0.0.1:8080/mcp") {
             do {
                 mcpBridge = MCPToolBridge(serverURL: serverURL)
-                var tools = try await mcpBridge!.connectAndDiscoverTools()
-
+                let tools : [any Tool]
                 if type(of:model) == SystemLanguageModel.self {
-                    // Limit the tools - else the context is too big
-                    tools = tools.filter { $0.name == "load_gedcom" || $0.name == "find_person" }
-
+                    var toolsLeft = 5 // Only convert the first tools - Apple models context size is limited
+                    tools = try await mcpBridge!.connectAndDiscoverTools() { _ in // we don't need the tool parameter
+                        toolsLeft  = toolsLeft - 1
+                        return toolsLeft >= 0
+                    }
+                } else {
+                    tools = try await mcpBridge!.connectAndDiscoverTools()
                 }
 
                 // Register all discovered tools with the session
@@ -95,7 +113,8 @@ struct InteractiveChat {
                 // Process the user input
                 do {
                     let response = try await session.respond(to: prompt)
-                    let content = response.content.replacingOccurrences(of: #"<think>(.|\n)*?</think>[\n]*"#, with: "", options: .regularExpression, range: nil)
+                    let text = response.content
+                    let content = text.replacingOccurrences(of: #"<think>(.|\n)*?</think>[\n]*"#, with: "", options: .regularExpression, range: nil)
 
                     print("Assistant: \(response.content)")
                     prompt += "\n\nAssistant: \(content)\n\n"

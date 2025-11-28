@@ -2,19 +2,21 @@ import System
 import Foundation
 
 #if canImport(AnyLanguageModel)
-import AnyLanguageModel
-typealias FoundationModelsLanguageModel = AnyLanguageModel.LanguageModel
-public typealias FoundationModelsTool = AnyLanguageModel.Tool
-public typealias FoundationModelsGeneratedContent = AnyLanguageModel.GeneratedContent
-public typealias FoundationModelsConvertibleFromGeneratedContent = AnyLanguageModel.ConvertibleFromGeneratedContent
 @_exported import AnyLanguageModel
+public struct AnyFoundationModels {
+    public typealias Tool = AnyLanguageModel.Tool
+    public typealias GeneratedContent = AnyLanguageModel.GeneratedContent
+    public typealias ConvertibleFromGeneratedContent = AnyLanguageModel.ConvertibleFromGeneratedContent
+    public typealias DynamicGenerationSchema = AnyLanguageModel.DynamicGenerationSchema
+}
 #else
-import FoundationModels
-typealias FoundationModelsLanguageModel = FoundationModels.SystemLanguageModel
-public typealias FoundationModelsTool = FoundationModels.Tool
-public typealias FoundationModelsGeneratedContent = FoundationModels.GeneratedContent
-public typealias FoundationModelsConvertibleFromGeneratedContent = FoundationModels.ConvertibleFromGeneratedContent
 @_exported import FoundationModels
+public struct AnyFoundationModels {
+    public typealias Tool = FoundationModels.Tool
+    public typealias GeneratedContent = FoundationModels.GeneratedContent
+    public typealias ConvertibleFromGeneratedContent = FoundationModels.ConvertibleFromGeneratedContent
+    public typealias DynamicGenerationSchema = FoundationModels.DynamicGenerationSchema
+}
 #endif
 
 import MCP
@@ -58,7 +60,7 @@ public class MCPToolBridge {
     }
     
     /// Connects to the MCP server and discovers available tools. For stdio connections, it also launches the server process.
-    public func connectAndDiscoverTools() async throws -> [any FoundationModelsTool] {
+    public func connectAndDiscoverTools(_ filter : ((MCP.Tool) -> Bool) = { _ in true }) async throws -> [any AnyFoundationModels.Tool] {
         let transport: any Transport
         switch connection {
         case .http(let serverURL):
@@ -90,8 +92,8 @@ public class MCPToolBridge {
         
         let listToolsResponse = try await client.listTools()
 
-        var appleTools: [any FoundationModelsTool] = []
-        for tool in listToolsResponse.tools {
+        var appleTools: [any AnyFoundationModels.Tool] = []
+        for tool in listToolsResponse.tools.filter({ filter($0)}) {
             let appleTool = DynamicMCPTool(
                 mcpClient: client,
                 toolName: tool.name,
@@ -100,7 +102,7 @@ public class MCPToolBridge {
             )
             appleTools.append(appleTool)
         }
-        
+
         return appleTools
     }
     
@@ -122,17 +124,16 @@ public class MCPToolBridge {
 
 /// A dynamic tool that bridges between Apple's Foundation Models and MCP tools
 @available(macOS 26.0, *)
-public struct DynamicMCPTool: FoundationModelsTool {
-    public typealias Output = String
-    public struct Arguments: FoundationModelsConvertibleFromGeneratedContent, Codable {
+public struct DynamicMCPTool: AnyFoundationModels.Tool {
+
+    public struct Arguments: AnyFoundationModels.ConvertibleFromGeneratedContent, Codable {
         public let jsonString: String
 
         public init(jsonString: String) {
             self.jsonString = jsonString
         }
 
-        public init(_ content: FoundationModelsGeneratedContent) throws {
-
+        public init(_ content: AnyFoundationModels.GeneratedContent) throws {
             self.jsonString = content.jsonString
         }
     }
@@ -142,9 +143,6 @@ public struct DynamicMCPTool: FoundationModelsTool {
     
     /// The name of the MCP tool
     private let toolName: String
-    
-    /// The input schema for the tool
-    private let inputSchema: Value
     
     /// The name of the tool
     public let name: String
@@ -169,59 +167,27 @@ public struct DynamicMCPTool: FoundationModelsTool {
         self.toolName = toolName
         self.name = toolName
         self.description = toolDescription
-        self.inputSchema = inputSchema
         self.parameters =  Self.convertMCPSchemaToGenerationSchema(toolName: toolName, inputSchema: inputSchema)
     }
 
     /// Converts the MCP schema to Apple's GenerationSchema
     /// - Returns: The converted Apple GenerationSchema
     private static func convertMCPSchemaToGenerationSchema(toolName: String, inputSchema : Value) -> GenerationSchema {
-        var properties: [GenerationSchema.Property] = []
-        if let schema = convertFromMCPValue(from: inputSchema) as? [String : Any] {
-            let required = (schema.first(where: { $0.key == "required" } )?.value) as? [String] ?? []
-            if let mcpProperties = (schema.first(where: { $0.key == "properties" } )?.value as? [String:[String:Any]]) {
-                for (name, property) in mcpProperties {
-                    if let p = property as? [String:String] {
-                        let isRequired = required.contains(name)
-                        let typeName = p["type"] ?? "string"
-                        let description = p["description"]
-                        /**
-                                                    TODO
-                         let dataType = (type == "string") ? <???> : <????>
-                        )
-                         */
-                        if isRequired {
-                            let propertyType = String.self
-                            let schemaProperty = GenerationSchema.Property(
-                                name: name,
-                                description: description,
-                                type: propertyType
-                            )
-                            properties.append(schemaProperty)
-                        } else {
-                            let propertyType = String?.self
-                            let schemaProperty = GenerationSchema.Property(
-                                name: name,
-                                description: nil,
-                                type: propertyType
-                            )
-                            properties.append(schemaProperty)
-                        }
-                        logger.debug("\(toolName): \(name) \(typeName) \(isRequired ? "required" : "optional")")
-                    }
-                }
-            }
+        let converter = ValueSchemaConverter(root: inputSchema.objectValue ?? [:])
+        if let dynamicSchema = converter.schema(), let schema = try? GenerationSchema(root: dynamicSchema, dependencies: []) {
+            return schema
+        } else {
+            return GenerationSchema(
+                type: String.self,
+               description: "tool parameters",
+               properties: [])
         }
-        return GenerationSchema(
-            type: String.self, description: "tool parameters",
-            properties: properties)
     }
 
-    
     /// Calls the MCP tool with the provided arguments
     /// - Parameter arguments: The arguments for the MCP tool
     /// - Returns: The response from the MCP tool
-    public func call(arguments: Arguments) async throws -> Output {
+    public func call(arguments: Arguments) async throws -> String {
         guard let jsonData = arguments.jsonString.data(using: .utf8) else {
             let errorMessage = "Error: Could not convert JSON string to Data."
             logger.error("\(errorMessage)")
@@ -229,19 +195,14 @@ public struct DynamicMCPTool: FoundationModelsTool {
         }
         
         do {
-            let jsonObject = try JSONSerialization.jsonObject(with: jsonData, options: [])
-            
-            guard let paramsDict = jsonObject as? [String: Any] else {
-                let errorMessage = "Error: JSON root is not a dictionary, or is not valid JSON."
+            guard let mcpArguments = try? JSONDecoder().decode([String: Value].self, from:jsonData) else {
+                let errorMessage = "Error: can't convert arguments to MCP JSON."
                 logger.error("\(errorMessage): \(arguments.jsonString)")
                 return errorMessage
             }
 
-            logger.debug("Calling MCP tool '\(toolName)' with arguments: \(paramsDict)")
+            logger.debug("Calling MCP tool '\(toolName)' with arguments: \(mcpArguments)")
 
-            // Convert arguments to the format expected by MCP using the recursive helper
-            let mcpArguments = paramsDict.mapValues { convertToMCPValue(from: $0) }
-            
             // Call the MCP tool
             let request = CallTool.request(.init(name: toolName, arguments: mcpArguments))
             let response = try await mcpClient.send(request)
@@ -271,83 +232,6 @@ public struct DynamicMCPTool: FoundationModelsTool {
             let errorMessage = "Error calling MCP tool '\(toolName)': \(error.localizedDescription). Invalid JSON: \(arguments.jsonString)"
             logger.debug("\(errorMessage)")
             return errorMessage
-        }
-    }
-
-    /// Recursively converts a value of type `Any` from `JSONSerialization` into an `MCP.Value`.
-    /// - Parameter any: The value to convert.
-    /// - Returns: The converted `MCP.Value`.
-    static public func convertFromMCPValue(from any: Value) -> Any {
-        switch any {
-        case .string(let value):
-            return value
-        case .null:
-            return NSNull()
-        case .bool(let value):
-            return value
-        case .int(let value):
-            return value
-        case .double(let value):
-            return value
-        case .data(_, let data):
-            return data
-        case .array(let value):
-            return value.map { convertFromMCPValue(from: $0) }
-        case .object(let value):
-            return value.mapValues { convertFromMCPValue(from: $0 )
-            }
-        }
-    }
-
-    /// Recursively converts a value of type `Any` from `JSONSerialization` into an `MCP.Value`.
-    /// - Parameter any: The value to convert.
-    /// - Returns: The converted `MCP.Value`.
-    private func convertToMCPValue(from any: Any) -> Value {
-        switch any {
-        case let stringValue as String:
-            return .string(stringValue)
-        case let numValue as NSNumber:
-            // The objCType for a Swift Bool bridged to NSNumber is "c" (for C char).
-            if String(cString: numValue.objCType) == "c" {
-                return .bool(numValue.boolValue)
-            }
-            // Check if the number has a fractional part.
-            if numValue.doubleValue != floor(numValue.doubleValue) {
-                return .double(numValue.doubleValue)
-            }
-            // Otherwise, it's an integer.
-            return .int(numValue.intValue)
-        case let arrayValue as [Any]:
-            return .array(arrayValue.map { convertToMCPValue(from: $0) })
-        case let dictValue as [String: Any]:
-            return .object(dictValue.mapValues { convertToMCPValue(from: $0) })
-        case is NSNull:
-            // MCP.Value does not have a direct representation for null.
-            // We'll represent it as an empty string, which is a safe default.
-            return .string("")
-        default:
-            // For any other unexpected type, fall back to a string representation.
-            return .string(String(describing: any))
-        }
-    }
-}
-
-// MARK: - MCP.Value extensions
-
-extension MCP.Value {
-    var objectValue: [String: MCP.Value]? {
-        if case .object(let dict) = self {
-            return dict
-        } else {
-            return nil
-        }
-    }
-
-    var stringValue: String? {
-        if case .string(let str) = self {
-            return str
-        } else {
-            return nil
         }
     }
 }

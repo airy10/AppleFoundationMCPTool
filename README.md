@@ -98,9 +98,8 @@ do {
     let session = LanguageModelSession(model: model, tools: tools) 
 
     // You can now use the session, and the LLM will be able to see and call the tools.
-    // We suppose that we have a weather tool here
-    let response = try await session.respond(to: "How's the weather in Paris?").
-    print(response.content)
+    let response = try await session.prompt("Use the 'add' tool to calculate 5 + 7.")
+    print(response)
 
 } catch {
     print("An error occurred: \(error.localizedDescription)")
